@@ -2,54 +2,94 @@
 
 //! stellar-agent-guard-contracts — a Soroban **custom account** that enforces
 //! agent spend policy inside `__check_auth`. See SPEC.md.
+//!
+//! The registered agent is an **Ed25519 keypair** whose public key is stored
+//! on the account. Every transaction that requires this account's
+//! authorization is routed by the host through `__check_auth`, which first
+//! verifies the Ed25519 signature presented over the transaction auth payload
+//! and then evaluates the policy (SPEC §4/§6/§7). No CAP-71 delegation in v1.
+
+#[cfg(test)]
+extern crate std;
 
 mod engine;
 mod types;
 mod window;
 
+#[cfg(test)]
+mod integration_tests;
+
 use engine::{contains_addr, decide, AccountState, Decision};
 use soroban_sdk::auth::{Context, ContractContext, CustomAccountInterface};
 use soroban_sdk::{
-    contract, contractevent, contractimpl, panic_with_error, vec, Address, Env, IntoVal, Symbol,
-    TryFromVal, Val,
+    contract, contractevent, contractimpl, panic_with_error, vec, Address, Bytes, BytesN, Env,
+    IntoVal, Symbol, TryFromVal, Val,
 };
 use types::{CheckResult, DataKey, Error, PolicyConfig, Status, WindowState};
 use window::Ledger;
 
-// ── Contract events (SPEC §9) ────────────────────────────────────────────
+// ── Contract events (SPEC §9). Each event is its own type; topic layout
+//    follows the SPEC table exactly so the Phase-2 listener can filter on one
+//    vocabulary without decoding payloads it does not need.
 
+/// Every decision: topic[0]=result (`allowed`/`blocked`), topic[1]=reason.
 #[contractevent]
 #[derive(Clone)]
-struct EventAuth {
-    #[topic]
-    name: Symbol,
+struct EventAuthChecked {
     #[topic]
     result: Symbol,
     #[topic]
     reason: Symbol,
 }
 
+/// Agent heartbeat: data `at` (unix seconds).
 #[contractevent]
 #[derive(Clone)]
-struct EventAdmin {
-    #[topic]
-    name: Symbol,
-    #[topic]
+struct EventHeartbeat {
+    at: u64,
+}
+
+/// Admin lifecycle events: data `by` (the admin address that acted).
+#[contractevent]
+#[derive(Clone)]
+struct EventInitialized {
     by: Address,
 }
 
 #[contractevent]
 #[derive(Clone)]
-struct EventHeartbeat {
-    #[topic]
-    name: Symbol,
-    at: u64,
+struct EventFrozen {
+    by: Address,
 }
 
-// ── Storage helpers ──────────────────────────────────────────────────────
-// Admin / AgentSigner / Initialized live in instance storage (auto-TTL on
+#[contractevent]
+#[derive(Clone)]
+struct EventUnfrozen {
+    by: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+struct EventPolicySet {
+    by: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+struct EventPolicyRevoked {
+    by: Address,
+}
+
+#[contractevent]
+#[derive(Clone)]
+struct EventAgentRotated {
+    by: Address,
+}
+
+// ── Persistent-storage helpers (SPEC §3) ────────────────────────────────
+// Admin / AgentPubkey / Initialized live in instance storage (auto-TTL on
 // every invocation); the rest live in persistent storage with explicit TTL
-// extension on every write (SPEC §3).
+// extension on every write.
 
 fn persist_set(env: &Env, key: &DataKey, val: &impl soroban_sdk::IntoVal<Env, Val>) {
     let seq = env.ledger().sequence();
@@ -60,6 +100,24 @@ fn persist_set(env: &Env, key: &DataKey, val: &impl soroban_sdk::IntoVal<Env, Va
 
 fn persist_get<T: soroban_sdk::TryFromVal<Env, Val>>(env: &Env, key: &DataKey) -> Option<T> {
     env.storage().persistent().get(key)
+}
+
+fn load_ledger(env: &Env) -> Ledger {
+    match persist_get::<WindowState>(env, &DataKey::Window) {
+        Some(state) => Ledger::from_entries(env, state.entries),
+        None => Ledger::empty(env),
+    }
+}
+
+fn save_ledger(env: &Env, ledger: &Ledger) {
+    persist_set(
+        env,
+        &DataKey::Window,
+        &WindowState {
+            total: ledger.total,
+            entries: ledger.entries.clone(),
+        },
+    );
 }
 
 // ── Policy config validation (SPEC §8) ───────────────────────────────────
@@ -127,53 +185,39 @@ fn validate_config(env: &Env, cfg: &PolicyConfig) -> Result<(), Error> {
     Ok(())
 }
 
-// ── Events (SPEC §9) ─────────────────────────────────────────────────────
+// ── Event emission ───────────────────────────────────────────────────────
 
-fn emit_auth(env: &Env, allowed: bool, reason: Option<&Error>) {
+fn emit_auth(env: &Env, allowed: bool, reason: Option<Error>) {
     let res = if allowed { "allowed" } else { "blocked" };
     let reason = reason.map_or("", |e| e.reason());
-    EventAuth {
-        name: Symbol::new(env, "auth_checked"),
+    EventAuthChecked {
         result: Symbol::new(env, res),
         reason: Symbol::new(env, reason),
     }
     .publish(env);
 }
 
-fn emit_policy(env: &Env, name: &str, by: &Address) {
-    EventAdmin {
-        name: Symbol::new(env, name),
-        by: by.clone(),
-    }
-    .publish(env);
+fn emit_heartbeat(env: &Env, at: u64) {
+    EventHeartbeat { at }.publish(env);
 }
 
-fn emit_no_by(env: &Env, name: &str, data: u64) {
-    EventHeartbeat {
-        name: Symbol::new(env, name),
-        at: data,
-    }
-    .publish(env);
+fn emit_initialized(env: &Env, by: &Address) {
+    EventInitialized { by: by.clone() }.publish(env);
 }
-
-// ── Window ledger persistence ────────────────────────────────────────────
-
-fn load_ledger(env: &Env) -> Ledger {
-    match persist_get::<WindowState>(env, &DataKey::Window) {
-        Some(state) => Ledger::from_entries(env, state.entries),
-        None => Ledger::empty(env),
-    }
+fn emit_frozen(env: &Env, by: &Address) {
+    EventFrozen { by: by.clone() }.publish(env);
 }
-
-fn save_ledger(env: &Env, ledger: &Ledger) {
-    persist_set(
-        env,
-        &DataKey::Window,
-        &WindowState {
-            total: ledger.total,
-            entries: ledger.entries.clone(),
-        },
-    );
+fn emit_unfrozen(env: &Env, by: &Address) {
+    EventUnfrozen { by: by.clone() }.publish(env);
+}
+fn emit_policy_set(env: &Env, by: &Address) {
+    EventPolicySet { by: by.clone() }.publish(env);
+}
+fn emit_policy_revoked(env: &Env, by: &Address) {
+    EventPolicyRevoked { by: by.clone() }.publish(env);
+}
+fn emit_agent_rotated(env: &Env, by: &Address) {
+    EventAgentRotated { by: by.clone() }.publish(env);
 }
 
 // ── Contract ─────────────────────────────────────────────────────────────
@@ -186,17 +230,22 @@ pub struct PolicyEngine;
 impl PolicyEngine {
     // ── Lifecycle ────────────────────────────────────────────────────────
 
-    pub fn initialize(env: Env, admin: Address, agent: Address) {
-        if persist_get::<bool>(&env, &DataKey::Initialized).unwrap_or(false) {
+    /// Registers the policy `admin` and the agent's Ed25519 public key.
+    /// One-time; the account is default-deny until a policy is installed.
+    pub fn initialize(env: Env, admin: Address, agent_pubkey: BytesN<32>) {
+        let already: Option<bool> = env.storage().instance().get(&DataKey::Initialized);
+        if already.unwrap_or(false) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::AgentSigner, &agent);
-        persist_set(&env, &DataKey::Initialized, &true);
+        env.storage()
+            .instance()
+            .set(&DataKey::AgentPubkey, &agent_pubkey);
+        env.storage().instance().set(&DataKey::Initialized, &true);
         persist_set(&env, &DataKey::AdminFrozen, &false);
         persist_set(&env, &DataKey::LastHeartbeat, &0u64);
-        emit_policy(&env, "initialized", &admin);
+        emit_initialized(&env, &admin);
     }
 
     // ── Policy management (admin only) ───────────────────────────────────
@@ -212,59 +261,66 @@ impl PolicyEngine {
         }
     }
 
+    /// Installs a new policy. Resets the rolling window and starts the
+    /// dead-man-switch clock at install time (a fresh policy gets full grace).
     pub fn set_policy(env: Env, config: PolicyConfig) {
         let admin = Self::admin_or_panic(&env);
         validate_config(&env, &config).unwrap_or_else(|e| panic_with_error!(&env, e));
         persist_set(&env, &DataKey::Policy, &config);
-        // Fresh window on every policy change; heartbeat clock starts now so a
-        // newly enabled dead-man switch grants full grace.
         save_ledger(&env, &Ledger::empty(&env));
         let now = env.ledger().timestamp();
         persist_set(&env, &DataKey::LastHeartbeat, &now);
-        emit_policy(&env, "policy_set", &admin);
+        emit_policy_set(&env, &admin);
     }
 
+    /// Removes the policy and window → immediate default-deny.
     pub fn revoke_policy(env: Env) {
         let admin = Self::admin_or_panic(&env);
         env.storage().persistent().remove(&DataKey::Policy);
         env.storage().persistent().remove(&DataKey::Window);
-        emit_policy(&env, "policy_revoked", &admin);
+        emit_policy_revoked(&env, &admin);
     }
 
-    pub fn rotate_agent_key(env: Env, new_agent: Address) {
+    /// Re-binds the agent's Ed25519 public key. Admin never gains fund-moving
+    /// power; it can only replace the key the account will authenticate.
+    pub fn rotate_agent_key(env: Env, new_pubkey: BytesN<32>) {
         let admin = Self::admin_or_panic(&env);
         env.storage()
             .instance()
-            .set(&DataKey::AgentSigner, &new_agent);
-        emit_policy(&env, "agent_rotated", &admin);
+            .set(&DataKey::AgentPubkey, &new_pubkey);
+        emit_agent_rotated(&env, &admin);
     }
 
     // ── Dead-man switch / freeze (SPEC §5) ───────────────────────────────
 
+    /// Records a heartbeat. Routes through `__check_auth` (self-call): the
+    /// host verifies the registered agent's signature and the engine applies
+    /// the account gates, so a heartbeat after the grace window expired — or
+    /// while admin-frozen — is rejected.
     pub fn heartbeat(env: Env) {
-        // Routes through __check_auth (a self-call): the host verifies the
-        // registered agent signer and the engine applies account gates.
         env.current_contract_address().require_auth();
         let now = env.ledger().timestamp();
         persist_set(&env, &DataKey::LastHeartbeat, &now);
-        emit_no_by(&env, "heartbeat", now);
+        emit_heartbeat(&env, now);
     }
 
     pub fn freeze(env: Env) {
         let admin = Self::admin_or_panic(&env);
         persist_set(&env, &DataKey::AdminFrozen, &true);
-        emit_policy(&env, "frozen", &admin);
+        emit_frozen(&env, &admin);
     }
 
+    /// Admin liveness attestation: clears the admin freeze and restarts the
+    /// heartbeat clock.
     pub fn unfreeze(env: Env) {
         let admin = Self::admin_or_panic(&env);
         persist_set(&env, &DataKey::AdminFrozen, &false);
         let now = env.ledger().timestamp();
         persist_set(&env, &DataKey::LastHeartbeat, &now);
-        emit_policy(&env, "unfrozen", &admin);
+        emit_unfrozen(&env, &admin);
     }
 
-    // ── Read / advisory ──────────────────────────────────────────────────
+    // ── Read / advisory (no auth — safe reads only, nothing confidential) ─
 
     #[allow(clippy::must_use_candidate)] // public read surface
     pub fn policy(env: Env) -> Option<PolicyConfig> {
@@ -290,10 +346,13 @@ impl PolicyEngine {
         }
     }
 
-    /// Pure pre-flight of the asset-transfer decision path (no writes).
+    /// Pure pre-flight of the asset-transfer decision path (no writes): lets
+    /// agents/SDK simulate a transfer before signing. Emits the same
+    /// `auth_checked` events as an in-path decision.
     #[allow(clippy::must_use_candidate)] // public read surface
     pub fn check(env: Env, asset: Address, to: Address, amount: i128) -> CheckResult {
         let Some(cfg) = persist_get::<PolicyConfig>(&env, &DataKey::Policy) else {
+            emit_auth(&env, false, Some(Error::NoPolicy));
             return CheckResult::Blocked(Symbol::new(&env, Error::NoPolicy.reason()));
         };
         let frozen = persist_get::<bool>(&env, &DataKey::AdminFrozen).unwrap_or(false);
@@ -314,8 +373,14 @@ impl PolicyEngine {
             now,
             vec![&env, call],
         ) {
-            Decision::Allowed => CheckResult::Allowed,
-            Decision::Blocked(e) => CheckResult::Blocked(Symbol::new(&env, e.reason())),
+            Decision::Allowed => {
+                emit_auth(&env, true, None);
+                CheckResult::Allowed
+            }
+            Decision::Blocked(e) => {
+                emit_auth(&env, false, Some(e));
+                CheckResult::Blocked(Symbol::new(&env, e.reason()))
+            }
         }
     }
 }
@@ -334,11 +399,16 @@ fn transfer_context(env: &Env, asset: &Address, to: &Address, amount: i128) -> C
 }
 
 // ── Custom account enforcement (SPEC §7) ─────────────────────────────────
+//
+// The host calls `__check_auth` for every authorization this account must
+// approve. The account verifies the agent's Ed25519 signature over the
+// transaction auth payload, then evaluates the policy decision table over
+// every auth context. `Ok(())` approves; `Err` rejects the whole transaction.
 
 #[contractimpl]
 #[allow(clippy::needless_pass_by_value)] // trait + contract ABI require owned args
 impl CustomAccountInterface for PolicyEngine {
-    type Signature = ();
+    type Signature = BytesN<64>;
     type Error = Error;
 
     fn __check_auth(
@@ -347,27 +417,23 @@ impl CustomAccountInterface for PolicyEngine {
         signatures: Self::Signature,
         auth_contexts: soroban_sdk::Vec<Context>,
     ) -> Result<(), Error> {
-        let _ = (signature_payload, signatures); // host-verified via delegate_auth
-                                                 // 1. The transaction must delegate to exactly the registered agent
-                                                 //    signer, and no one else.
-        let delegates = env.custom_account().get_delegated_signers();
-        if delegates.len() != 1 {
-            emit_auth(&env, false, Some(&Error::Unauthorized));
-            return Err(Error::Unauthorized);
-        }
-        let agent: Option<Address> = env.storage().instance().get(&DataKey::AgentSigner);
+        // 1. Agent key registered (initialize done).
+        let agent: Option<BytesN<32>> =
+            env.storage().instance().get(&DataKey::AgentPubkey);
         let Some(agent) = agent else {
-            emit_auth(&env, false, Some(&Error::NotInitialized));
+            emit_auth(&env, false, Some(Error::NotInitialized));
             return Err(Error::NotInitialized);
         };
-        if delegates.get(0) != Some(agent.clone()) {
-            emit_auth(&env, false, Some(&Error::Unauthorized));
-            return Err(Error::Unauthorized);
-        }
 
-        // 2. Policy snapshot + gate evaluation over every context.
+        // 2. Verify the agent's Ed25519 signature over the auth payload. The
+        //    host crypto function traps the frame on a bad signature, so a
+        //    wrong key can never reach policy evaluation.
+        let message: Bytes = signature_payload.into();
+        env.crypto().ed25519_verify(&agent, &message, &signatures);
+
+        // 3. Policy snapshot + gate evaluation over every context.
         let Some(cfg) = persist_get::<PolicyConfig>(&env, &DataKey::Policy) else {
-            emit_auth(&env, false, Some(&Error::NoPolicy));
+            emit_auth(&env, false, Some(Error::NoPolicy));
             return Err(Error::NoPolicy);
         };
         let frozen = persist_get::<bool>(&env, &DataKey::AdminFrozen).unwrap_or(false);
@@ -389,9 +455,6 @@ impl CustomAccountInterface for PolicyEngine {
             auth_contexts,
         ) {
             Decision::Allowed => {
-                // 3. Host-verify the agent signer (ed25519 signature, or
-                //    contract-delegate auth).
-                env.custom_account().delegate_auth(&agent);
                 // 4. Persist window changes made by the decision.
                 let had_window = persist_get::<WindowState>(&env, &DataKey::Window).is_some();
                 let has_entries = ledger.len() > 0;
@@ -402,7 +465,7 @@ impl CustomAccountInterface for PolicyEngine {
                 Ok(())
             }
             Decision::Blocked(e) => {
-                emit_auth(&env, false, Some(&e));
+                emit_auth(&env, false, Some(e));
                 Err(e)
             }
         }

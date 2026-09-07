@@ -101,15 +101,25 @@ pub enum CheckResult {
     Blocked(Symbol),
 }
 
+// Storage layout (SPEC §3). `Initialized`/`Admin`/`AgentPubkey` live in
+// instance storage (auto-TTL on every invocation); the rest live in
+// persistent storage with explicit TTL extension on every write.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub enum DataKey {
+    /// Instance: one-time flag for `initialize`.
     Initialized,
+    /// Instance: policy admin; set once at `initialize`.
     Admin,
-    AgentSigner,
+    /// Instance: the registered agent's Ed25519 public key (32 bytes).
+    AgentPubkey,
+    /// Persistent: current policy (`None` = default-deny).
     Policy,
+    /// Persistent: rolling spend ledger for asset transfers.
     Window,
+    /// Persistent: unix seconds of last agent heartbeat (0 = never).
     LastHeartbeat,
+    /// Persistent: admin-initiated freeze flag.
     AdminFrozen,
 }
 
