@@ -2,6 +2,10 @@
 name = "stellar-agent-guard-contracts"
 version = "0.1.0"
 edition = "2021"
+description = "Non-custodial Soroban custom-account contract enforcing agent spend policy (per-tx/rolling caps, allowlists, pause, dead-man switch) inside __check_auth — Stellar Agent Guard."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aigbagbobila/stellar-agent-guard-contracts"
+rust-version = "1.85"
 publish = false
 
 [lib]
