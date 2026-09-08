@@ -1,5 +1,5 @@
 <p align="center">
-<img src="./assets/banner.svg" alt="Stellar Agent Guard banner" width="700"/>
+<img src="Gemini_Generated_Image_mvimg2mvimg2mvim.jpeg" alt="Stellar Agent Guard" width="700"/>
 </p>
 <p align="center">
 <a href="https://github.com/aigbagbobila/stellar-agent-guard-contracts/actions/workflows/ci.yml">
@@ -12,6 +12,7 @@
 <img src="https://img.shields.io/badge/rust-1.85%2B-blue" alt="Rust 1.85+"/>
 </a>
 </p>
+
 # Stellar Agent Guard — Contracts
 **Non-custodial, account-level spending firewall for autonomous AI agents on Stellar.**
 
