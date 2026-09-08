@@ -418,8 +418,7 @@ impl CustomAccountInterface for PolicyEngine {
         auth_contexts: soroban_sdk::Vec<Context>,
     ) -> Result<(), Error> {
         // 1. Agent key registered (initialize done).
-        let agent: Option<BytesN<32>> =
-            env.storage().instance().get(&DataKey::AgentPubkey);
+        let agent: Option<BytesN<32>> = env.storage().instance().get(&DataKey::AgentPubkey);
         let Some(agent) = agent else {
             emit_auth(&env, false, Some(Error::NotInitialized));
             return Err(Error::NotInitialized);

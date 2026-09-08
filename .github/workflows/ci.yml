@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Job name must stay exactly `ci`: the repo's `main-protection` ruleset
+  # (phase 0) requires the `ci` status check on `main`.
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (all + pedantic deny, all targets/features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Unit + integration tests
+        run: cargo test
+
+      - name: Contract build (wasm32v1-none)
+        run: cargo build --release --target wasm32v1-none
+
+      - name: Agent submission tool build (tools/agent-tx)
+        run: cargo build --release --manifest-path tools/agent-tx/Cargo.toml

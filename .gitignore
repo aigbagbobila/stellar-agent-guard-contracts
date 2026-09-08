@@ -1,4 +1,7 @@
 /target
+**/target
+/test_snapshots
+test_snapshots/
 **/*.rs.bk
 *.swp
 .DS_Store

@@ -25,8 +25,8 @@ use sha2::{Digest, Sha256};
 use soroban_sdk::auth::{Context, CustomAccountInterface};
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
 use soroban_sdk::xdr::{
-    self, HashIdPreimage, HashIdPreimageSorobanAuthorization, InvokeContractArgs, Limited,
-    Limits, ScBytes, ScSymbol, ScVal, SorobanAddressCredentials, SorobanAuthorizationEntry,
+    self, HashIdPreimage, HashIdPreimageSorobanAuthorization, InvokeContractArgs, Limited, Limits,
+    ScBytes, ScSymbol, ScVal, SorobanAddressCredentials, SorobanAuthorizationEntry,
     SorobanAuthorizedFunction, SorobanAuthorizedInvocation, SorobanCredentials, WriteXdr,
 };
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, FromVal, IntoVal, Symbol, Val};
@@ -39,6 +39,7 @@ const SIG_EXPIRATION_LEDGER: u32 = 6_000_000;
 pub struct MockAsset;
 
 #[contractimpl]
+#[allow(clippy::needless_pass_by_value)] // contract ABI requires owned args
 impl MockAsset {
     /// SAC-shaped `transfer`: requires auth from the sender. The guard
     /// contract is the `from`, so this routes through `__check_auth`.
@@ -56,10 +57,15 @@ impl MockAsset {
 pub struct MockAdmin;
 
 #[contractimpl]
+#[allow(
+    clippy::needless_pass_by_value, // trait ABI requires owned args
+    clippy::used_underscore_binding // trait-required params, deliberately unused
+)]
 impl CustomAccountInterface for MockAdmin {
     type Signature = ();
     type Error = GuardError;
 
+    #[allow(clippy::used_underscore_binding)] // trait-required params, deliberately unused
     fn __check_auth(
         _env: Env,
         _signature_payload: soroban_sdk::crypto::Hash<32>,
@@ -95,6 +101,13 @@ impl Harness {
         let recv = Address::generate(&env);
         let other = Address::generate(&env);
 
+        // soroban-sdk 27 test env defaults to *enforcing* auth: `require_auth`
+        // only passes with explicit entries. Admin setup ops (initialize,
+        // set_policy, ...) run under blanket mocking; `enforce()` flips the env
+        // back into enforcing mode with a hand-signed entry for the guarded
+        // flow. `mock_all_auths` is the documented default intent of the
+        // harness (see header comment).
+        env.mock_all_auths();
         let client = PolicyEngineClient::new(&env, &guard);
         let pk = agent.verifying_key().to_bytes();
         client.initialize(&admin, &BytesN::from_array(&env, &pk));
@@ -286,6 +299,8 @@ impl Harness {
     }
 
     /// Did the guard emit an `auth_checked` event with `result = allowed`?
+    /// `#[contractevent]` prepends the event name to the topic list, so the
+    /// `result` topic (SPEC §9) is at index 1.
     fn emitted_allowed_auth(&self) -> bool {
         let want = ScVal::Symbol(ScSymbol::try_from(std::vec::Vec::from("allowed")).unwrap());
         self.env
@@ -294,7 +309,7 @@ impl Harness {
             .events()
             .iter()
             .any(|e| match &e.body {
-                xdr::ContractEventBody::V0(v0) => v0.topics.get(0) == Some(&want),
+                xdr::ContractEventBody::V0(v0) => v0.topics.get(1) == Some(&want),
             })
     }
 }
@@ -344,15 +359,16 @@ fn per_tx_cap_violation_blocked_without_window_effect() {
     let mut h = Harness::new();
     let recv = h.recv.clone();
     let mut p = h.base_policy();
-    p.per_tx_cap = 10;
+    p.per_tx_cap = 50;
     p.window_cap = 100; // also watch the window: blocked txs must not spend it
     h.install_policy(&p);
     h.set_time(1_000);
 
-    h.transfer(&recv, 9); // ok: window total 9
-    h.transfer_expect_blocked(&recv, 11); // per-tx cap
-    h.transfer(&recv, 10); // ok: total 19
-    h.transfer(&recv, 81); // ok iff the blocked 11 never hit the window: 19+81=100 <= 100
+    h.transfer(&recv, 20); // ok: window total 20
+    h.transfer_expect_blocked(&recv, 60); // per-tx cap (60 > 50); window must stay 20
+    h.transfer(&recv, 30); // ok: total 50 — would fail if the blocked 60 had hit the window (110 > 100)
+    h.transfer(&recv, 50); // ok: total exactly 100
+    h.transfer_expect_blocked(&recv, 1); // window ledger is genuinely full: proves the 60 never counted
 }
 
 #[test]
@@ -402,19 +418,25 @@ fn dead_man_switch_freeze_and_admin_reversal() {
     let recv = h.recv.clone();
     let mut p = h.base_policy();
     p.dms_grace_secs = 60;
-    h.install_policy(&p); // LastHeartbeat = policy-install time = 0 (ledger ts 0)
+    // Install at a realistic (non-zero) ledger time: `set_policy` starts the
+    // DMS clock at install time, and the `LastHeartbeat != 0` sentinel (SPEC
+    // §4 rule 2) is only meaningful off the epoch — ledger ts 0 would collide
+    // with "never heartbeated".
+    h.set_time(1_000_000);
+    h.install_policy(&p); // LastHeartbeat = 1_000_000
 
     // Within grace: fine.
-    h.set_time(10);
+    h.set_time(1_000_010);
     h.transfer(&recv, 5);
 
     // Grace (60s) elapsed: transfers and even heartbeats are blocked.
-    h.set_time(100);
+    h.set_time(1_000_100);
     h.transfer_expect_blocked(&recv, 5);
     h.heartbeat_expect_blocked(); // silence cannot self-revive (SPEC §5)
 
     // Admin unfreeze is the reversal path (SPEC §5).
-    h.unfreeze(); // sets LastHeartbeat = now (100)
+    h.unfreeze(); // sets LastHeartbeat = now (1_000_100)
+    h.heartbeat(); // a subsequently-heartbeating agent keeps it alive
     h.transfer(&recv, 5); // revived
 }
 
@@ -473,7 +495,10 @@ fn wrong_signature_is_rejected_by_host_crypto() {
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         MockAssetClient::new(&h.env, &h.asset).transfer(&h.guard, &recv, &5);
     }));
-    assert!(res.is_err(), "a signature by an unregistered key must not authorize");
+    assert!(
+        res.is_err(),
+        "a signature by an unregistered key must not authorize"
+    );
 
     // The registered agent still works afterwards.
     h.transfer(&recv, 5);
@@ -489,7 +514,8 @@ fn rotated_agent_key_binds() {
     // Admin rotates the key before enforcement begins.
     let new_key = SigningKey::from_bytes(&[11u8; 32]);
     let new_pk = new_key.verifying_key().to_bytes();
-    PolicyEngineClient::new(&h.env, &h.guard).rotate_agent_key(&BytesN::from_array(&h.env, &new_pk));
+    PolicyEngineClient::new(&h.env, &h.guard)
+        .rotate_agent_key(&BytesN::from_array(&h.env, &new_pk));
 
     // Old agent key no longer authorizes.
     let old_root = h.transfer_invocation(&h.guard, &recv, 5);
@@ -524,6 +550,9 @@ fn revoke_policy_is_instant_default_deny() {
     h.install_policy(&h.base_policy());
     h.set_time(1_000);
     h.transfer(&recv, 5);
+    // The transfer above left the env in enforcing mode; revoke is an admin op
+    // under blanket mocking, so re-enable it before the admin call.
+    h.env.mock_all_auths();
     h.revoke_policy();
     h.transfer_expect_blocked(&recv, 5);
 }

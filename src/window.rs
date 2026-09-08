@@ -46,13 +46,19 @@ impl Ledger {
     }
 
     /// Drop fully-expired entries (front of the list) and update the total.
+    ///
+    /// Expiry is tested as `entry.ts + window_secs <= now` (addition form)
+    /// rather than `entry.ts <= now - window_secs` (subtraction form): the
+    /// two are algebraically identical but the addition form never underflows
+    /// at low timestamps, so an entry recorded at ledger ts 0 cannot be
+    /// wrongly treated as expired just because `now - window_secs` would clip
+    /// to 0 under saturating subtraction.
     pub fn prune(&mut self, now: u64, window_secs: u64) {
         if window_secs == 0 {
             return;
         }
-        let cutoff = now.saturating_sub(window_secs);
         while let Some(front) = self.entries.first() {
-            if front.ts <= cutoff {
+            if front.ts.saturating_add(window_secs) <= now {
                 self.total = self.total.saturating_sub(front.amount);
                 self.entries.pop_front();
             } else {
@@ -162,8 +168,21 @@ mod tests {
         let env = Env::default();
         let mut l = Ledger::empty(&env);
         l.admit(200, 40);
-        l.prune(300, 100); // cutoff exactly 200 -> expired
+        l.prune(300, 100); // entry ts + 100 == 300 -> exactly expired
         assert_eq!(l.total, 0);
+    }
+
+    #[test]
+    fn prune_keeps_recent_entries_at_low_timestamps() {
+        // Regression: `now.saturating_sub(window_secs)` clips to 0 at low
+        // timestamps and wrongly expired entries recorded at ledger ts 0 that
+        // were still well inside the window.
+        let env = Env::default();
+        let mut l = Ledger::empty(&env);
+        l.admit(0, 30);
+        l.prune(50, 100); // 50s later; entry is only 50s old -> must survive
+        assert_eq!(l.total, 30);
+        assert_eq!(l.len(), 1);
     }
 
     #[test]
