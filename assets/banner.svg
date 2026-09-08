@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="200" viewBox="0 0 900 200" role="img" aria-label="Stellar Agent Guard banner">
+  <rect width="900" height="200" rx="16" fill="#0f1222"/>
+  <rect x="24" y="24" width="852" height="152" rx="12" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="6 6" opacity="0.5"/>
+  <text x="450" y="92" text-anchor="middle" font-family="monospace" font-size="46" font-weight="bold" fill="#ffffff">STELLAR AGENT GUARD</text>
+  <text x="450" y="136" text-anchor="middle" font-family="monospace" font-size="20" fill="#9aa4c7">on-chain spending firewall for autonomous AI agents</text>
+</svg>
