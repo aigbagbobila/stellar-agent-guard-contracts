@@ -480,7 +480,7 @@ and a review approved for changes to merge.
 ## Community
 
 - [Telegram](https://t.me/+EzSusj-2vVhhNmI0) — Stellar Agent Guard community group
-- [Discord](https://discord.gg/KSatPckM2) — Stellar Agent Guard community server
+- [Discord](https://discord.gg/Z766vsgjg) — Stellar Agent Guard community server
 
 ## Maintainers
 
@@ -491,7 +491,7 @@ and a review approved for changes to merge.
 ## Socials
 
 - [Telegram](https://t.me/+EzSusj-2vVhhNmI0)
-- [Discord](https://discord.gg/KSatPckM2)
+- [Discord](https://discord.gg/Z766vsgjg)
 
 ## Contact
 
