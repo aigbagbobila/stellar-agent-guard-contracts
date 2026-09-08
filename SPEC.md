@@ -83,16 +83,15 @@ Therefore the scope is:
 native and automatic for SAC token transfers (`transfer`/`transfer_from`), since these are the
 calls whose arguments the Soroban auth context exposes for inspection. For other Soroban
 contract calls made by the guarded account (arbitrary DEX/lending/protocol calls), the policy
-engine still enforces window and pause state, but per-call amount/recipient limits are not yet
-enforced — extending fine-grained enforcement to arbitrary calls is tracked as a v2 item, not
-implied as already covered.**
+engine enforces the protocol allowlist — the account is default-deny, so every call must match
+an allowlisted contract and, where configured, an allowlisted function — plus the
+active-window, pause, freeze, and dead-man gates. Per-call amount/recipient limits and
+rolling-window spend accounting are not applied to those calls, because the amount is not
+available in the auth context in any trustworthy way. Extending fine-grained enforcement to
+arbitrary calls is tracked as a v2 item, not implied as already covered.**
 
-What "window and pause state" means for non-SAC calls is made exact in §6.4: the account is a
-**default-deny** environment — every call must match the protocol allowlist (contract, and
-optionally function) — and the active-window / pause / dead-man-freeze checks gate every context
-equally, SAC or not. What is *not* applied to non-SAC calls is per-call amount capping and
-rolling-window spend accounting, because the amount is not available in the context in any
-trustworthy way.
+The classification that produces this boundary (`AssetTransfer` vs `Protocol` vs `Unknown`
+default-deny) is spelled out in §6.
 
 This boundary is an inherent property of the platform (an independent current confirmation:
 OpenZeppelin's Soroban `spending_limit` plugin likewise only meters transfer contexts and
@@ -274,8 +273,9 @@ to weaken an allowlist that already exists.
 
 **Boundary stated exactly:** pause (#4), active-window (#5), and dead-man/admin freeze (#1–#2)
 are *transaction-level* gates applied before classification, so they bind every call the
-account makes, SAC or protocol. Spend caps and rolling-window accounting bind SAC asset
-transfers only. Recipient allowlists bind SAC asset transfers only.
+account makes, SAC or protocol. The protocol allowlist (default-deny) binds every non-self,
+non-asset call. Spend caps, rolling-window accounting, and recipient allowlists bind SAC asset
+transfers only.
 
 ---
 
