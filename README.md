@@ -479,18 +479,18 @@ and a review approved for changes to merge.
 
 ## Community
 
-- [Telegram](https://t.me/+O3iICQDcZEViM2Nk) — Stellar Agent Guard community group
+- [Telegram](https://t.me/+EzSusj-2vVhhNmI0) — Stellar Agent Guard community group
 - [Discord](https://discord.gg/KSatPckM2) — Stellar Agent Guard community server
 
 ## Maintainers
 
 | Name | GitHub | Telegram |
 |---|---|---|
-| Hybrid | [@aigbagbobila](https://github.com/aigbagbobila) | [@aigbagbobila](https://t.me/+O3iICQDcZEViM2Nk) |
+| Hybrid | [@aigbagbobila](https://github.com/aigbagbobila) | [@aigbagbobila](https://t.me/+EzSusj-2vVhhNmI0) |
 
 ## Socials
 
-- [Telegram](https://t.me/+O3iICQDcZEViM2Nk)
+- [Telegram](https://t.me/+EzSusj-2vVhhNmI0)
 - [Discord](https://discord.gg/KSatPckM2)
 
 ## Contact
