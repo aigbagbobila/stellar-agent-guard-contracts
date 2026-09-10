@@ -1,0 +1,28 @@
+site:
+  title: Stellar Agent Guard — Contracts
+  structure:
+    - type: section
+      key: section-learn
+      title: Learn
+      default: true
+      path: learn
+      children:
+        - type: space
+          key: space-getting-started
+          title: Getting Started
+          path: getting-started
+          default: true
+          content:
+            directory: ./
+        - type: space
+          key: space-concepts
+          title: Concepts
+          path: concepts
+          content:
+            directory: ./concepts
+        - type: space
+          key: space-functions
+          title: Functions
+          path: functions
+          content:
+            directory: ./functions
