@@ -11,9 +11,15 @@
 <a href="https://www.rust-lang.org/">
 <img src="https://img.shields.io/badge/rust-1.85%2B-blue" alt="Rust 1.85+"/>
 </a>
+<a href="https://soroban-cost-estimator.gitbook.io/stellar-agent-guard-contracts/">
+<img src="https://img.shields.io/badge/docs-GitBook-blue" alt="Documentation"/>
+</a>
 </p>
 
 # Stellar Agent Guard — Contracts
+
+📚 **[Documentation](https://soroban-cost-estimator.gitbook.io/stellar-agent-guard-contracts/)**
+
 **Non-custodial, account-level spending firewall for autonomous AI agents on Stellar.**
 
 An autonomous agent holding a wallet has a single point of failure: one prompt-injection
