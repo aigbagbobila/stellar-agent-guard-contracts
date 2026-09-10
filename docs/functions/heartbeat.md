@@ -1,0 +1,3 @@
+# heartbeat
+
+Agent liveness signal.
